@@ -6,6 +6,7 @@ import {
   type ProjectAdapter,
   type ProjectPaths,
   type ProjectTools,
+  type AuthorizationHandle,
   type ObservatoryHandle,
   type SessionPruneHandle,
 } from '@framework/cli';
@@ -53,6 +54,36 @@ export interface ApiProjectOptions<TConfig extends ApiPresetConfig> {
   readonly overrides?: Partial<Omit<ProjectAdapter, 'paths' | 'tools'>> & {
     readonly paths?: Partial<ProjectPaths>;
     readonly tools?: Partial<ProjectTools>;
+  };
+}
+
+/** `permission:sync`'s store, when the app has `@framework/authorization` installed. */
+function authorizationHook<TConfig extends ApiPresetConfig>(root: string): ProjectAdapter['authorization'] {
+  let specifier: string;
+  try {
+    specifier = Bun.resolveSync('@framework/authorization', root);
+  } catch {
+    return undefined;
+  }
+  return async (rawConfig): Promise<AuthorizationHandle> => {
+    const config = rawConfig as TConfig & {
+      readonly authorization?: { readonly roles?: Readonly<Record<string, readonly string[]>> };
+    };
+    const { PgRoleStore } = (await import(specifier)) as {
+      PgRoleStore: new (connection: DatabaseConnection) => {
+        syncRoles: (roles: Readonly<Record<string, readonly string[]>>) => ReturnType<AuthorizationHandle['sync']>;
+      };
+    };
+    const connection = createConnection({
+      url: config.database.url,
+      maxConnections: config.database.maxConnections,
+      applicationName: config.app.name,
+    });
+    const store = new PgRoleStore(connection);
+    return {
+      sync: () => store.syncRoles(config.authorization?.roles ?? {}),
+      close: () => connection.close(),
+    };
   };
 }
 
@@ -139,6 +170,7 @@ export async function apiProject<TConfig extends ApiPresetConfig>(
   const middleware = createMiddleware(await loadConfig({ envFile }));
   const sessions = sessionsHook<TConfig>(root);
   const observatory = observatoryHook<TConfig>(root);
+  const authorization = authorizationHook<TConfig>(root);
 
   return defineProject({
     name,
@@ -158,6 +190,7 @@ export async function apiProject<TConfig extends ApiPresetConfig>(
     },
     ...(sessions ? { sessions } : {}),
     ...(observatory ? { observatory } : {}),
+    ...(authorization ? { authorization } : {}),
     routes: async (config) => {
       // Booting only registers bindings (nothing connects); it makes the
       // listed route table match what the server actually serves.
