@@ -15,7 +15,8 @@
   },
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
   },
   "scripts": {
     "lint": "oxlint",
@@ -27,6 +28,7 @@
   },
   "dependencies": {
     "@framework/cache": "workspace:*",
+    "@framework/cli": "workspace:*",
     "@framework/core": "workspace:*",
     "@framework/crud": "workspace:*",
     "@framework/database": "workspace:*",
@@ -35,7 +37,9 @@
     "@framework/logging": "workspace:*",
     "@framework/mail": "workspace:*",
     "@framework/notifications": "workspace:*",
+    "@framework/openapi": "workspace:*",
     "@framework/queue": "workspace:*",
-    "@framework/storage": "workspace:*"
+    "@framework/storage": "workspace:*",
+    "hono": "4.13.13"
   }
 }

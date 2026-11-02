@@ -1,8 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { Application, defineProvider, type ServiceProvider } from '@framework/core';
+import { Application, defineProvider, type JsonValue, type ServiceProvider } from '@framework/core';
 import { DATABASE } from '@framework/database';
-import { EVENT_BUS } from '@framework/events';
+import { type DomainEvent, EVENT_BUS } from '@framework/events';
+import { defineApp } from '@framework/http';
 import { defineNotificationJob, NOTIFICATIONS } from '@framework/notifications';
+import type { Operation } from '@framework/openapi';
 import { QUEUE } from '@framework/queue';
 import { type ApiPresetConfig, apiPreset, DATA_PORTER, EXPORT_STORE, WEBSOCKET_GATEWAY } from '../src';
 
@@ -10,7 +12,7 @@ const redisUrl = process.env.REDIS_URL;
 if (!redisUrl) throw new Error('REDIS_URL is not set; run `bun run db:up` and see .env.test.example');
 
 const config: ApiPresetConfig = {
-  app: { name: 'preset-test' },
+  app: { name: 'preset-test', env: 'test' },
   database: { url: 'postgres://app:unused@127.0.0.1:1/unused', maxConnections: 1 },
   redis: { url: redisUrl },
   queue: { name: 'preset-tests', prefix: `preset-${crypto.randomUUID()}` },
@@ -43,6 +45,63 @@ describe('apiPreset', () => {
     } finally {
       await application.shutdown();
     }
+  });
+
+  test('listeners subscribe to the event bus at boot', async () => {
+    const seen: JsonValue[] = [];
+    const preset = apiPreset({
+      notifications,
+      listeners: [{ name: 'probe', channel: 'orders', handle: (event: DomainEvent) => void seen.push(event.type) }],
+    });
+    expect(names(preset.providers)).toContain('listeners');
+
+    const application = await new Application<ApiPresetConfig>({ config, providers: preset.providers }).boot();
+    try {
+      await application.container.resolve(EVENT_BUS).publish({
+        id: 'e1',
+        type: 'orders.paid',
+        channel: 'orders',
+        payload: {},
+        correlationId: 'corr-preset',
+        actor: { id: null, type: 'system' },
+        occurredAt: new Date().toISOString(),
+      });
+      const deadline = Date.now() + 2_000;
+      while (seen.length === 0 && Date.now() < deadline) await Bun.sleep(5);
+      expect(seen).toEqual(['orders.paid']);
+    } finally {
+      await application.shutdown();
+    }
+  });
+
+  test('the data module documents its routes and is denied in production by default', async () => {
+    const preset = apiPreset({ notifications, data: { resources: ['products'] } });
+    const app = defineApp<ApiPresetConfig, Operation>({
+      http: () => ({ exposeInternalErrors: false }),
+      providers: preset.providers,
+      modules: preset.modules,
+    });
+    expect(app.operations.map((operation) => operation.fullPath)).toContain('/api/v1/data/import');
+
+    const production = { ...config, app: { ...config.app, env: 'production' } };
+    const application = await app.createApplication(production).boot();
+    try {
+      const response = await app.createHttp(application).request('/api/v1/data/import', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ resource: 'products', format: 'csv', content: 'a' }),
+      });
+      expect(response.status).toBe(403);
+    } finally {
+      await application.shutdown();
+    }
+  });
+
+  test('an authorize option replaces the default guard, and data: false removes the module', () => {
+    expect(apiPreset({ notifications, data: false }).modules).toEqual([]);
+    expect(apiPreset({ notifications, data: { authorize: () => {} } }).modules.map((module) => module.name)).toEqual([
+      'data',
+    ]);
   });
 
   test('probes the database, cache and queue for readiness', () => {

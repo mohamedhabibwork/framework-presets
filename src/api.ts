@@ -1,6 +1,6 @@
 import { cacheHealthCheck, type CacheProviderConfig, createCacheProvider } from '@framework/cache';
-import { defineProvider, EXECUTION_CONTEXT, type HealthCheck, type ServiceProvider } from '@framework/core';
-import { DataPorter, LocalExportStore } from '@framework/crud';
+import { CONFIG, defineProvider, EXECUTION_CONTEXT, type HealthCheck, type ServiceProvider } from '@framework/core';
+import { DataPorter, dataOperations, importExportRoutes, LocalExportStore } from '@framework/crud';
 import {
   AUDIT_READER,
   AuditReader,
@@ -11,8 +11,8 @@ import {
   TRANSACTION_CONTEXT,
   TransactionContext,
 } from '@framework/database';
-import { EVENT_BUS, MemoryEventBus, RedisEventBus, WebsocketGateway } from '@framework/events';
-import { resolve } from '@framework/http';
+import { type DomainEvent, EVENT_BUS, MemoryEventBus, RedisEventBus, WebsocketGateway } from '@framework/events';
+import { type AppModule, defineModule, type FrameworkEnv, forbidden, resolve } from '@framework/http';
 import { createLoggingProvider } from '@framework/logging';
 import { createMailProvider, MAILER, type MailConfig } from '@framework/mail';
 import {
@@ -22,13 +22,15 @@ import {
   NotificationsService,
   type NotificationsServiceOptions,
 } from '@framework/notifications';
+import type { Operation } from '@framework/openapi';
 import { QUEUE, QueueManager, queueHealthCheck } from '@framework/queue';
 import { createStorageProvider, type StorageConfig } from '@framework/storage';
+import type { Context } from 'hono';
 import { DATA_PORTER, EXPORT_STORE, WEBSOCKET_GATEWAY } from './constants';
 
 /** The config sections the default providers read; apps add their own alongside. */
 export interface ApiPresetConfig {
-  readonly app: { readonly name: string };
+  readonly app: { readonly name: string; readonly env: string };
   readonly database: { readonly url: string; readonly maxConnections: number };
   readonly redis: { readonly url: string };
   readonly queue: { readonly name: string; readonly prefix: string };
@@ -45,6 +47,20 @@ type Part<TConfig extends object> = false | ServiceProvider<TConfig>;
 
 type DataPorterOptions = ConstructorParameters<typeof DataPorter>[0];
 
+/** A listener reacts to one event channel. Delivery is at-least-once: keep handlers idempotent. */
+export interface Listener {
+  readonly name: string;
+  readonly channel: string;
+  readonly handle: (event: DomainEvent) => void | Promise<void>;
+}
+
+export interface DataOptions extends Partial<Pick<DataPorterOptions, 'imports' | 'exports'>> {
+  /** Guards the routes. Defaults to denying production until you wire authorization. */
+  readonly authorize?: Parameters<typeof importExportRoutes>[0]['authorize'];
+  /** Resources documented in OpenAPI. */
+  readonly resources?: readonly string[];
+}
+
 export interface ApiPresetOptions<TConfig extends ApiPresetConfig> {
   readonly database?: Part<TConfig>;
   readonly cache?: Part<TConfig>;
@@ -55,13 +71,17 @@ export interface ApiPresetOptions<TConfig extends ApiPresetConfig> {
   readonly mail?: Part<TConfig>;
   /** The app's notification definitions and delivery job; the worker must run that job too. */
   readonly notifications: Part<TConfig> | Pick<NotificationsServiceOptions, 'definitions' | 'job'>;
-  /** Import/export jobs behind the data routes. Defaults to none. */
-  readonly data?: Part<TConfig> | Pick<DataPorterOptions, 'imports' | 'exports'>;
+  /** Queued import/export under `/api/v1/data`. A provider replaces only the bindings, not the routes. */
+  readonly data?: Part<TConfig> | DataOptions;
+  /** Subscribed to the event bus at boot. */
+  readonly listeners?: readonly Listener[];
 }
 
 export interface ApiPreset<TConfig extends object> {
   /** List these in `defineApp({ providers })`; boot order comes from their dependencies. */
   readonly providers: readonly ServiceProvider<TConfig>[];
+  /** List these in `defineApp({ modules })`: the data routes and their OpenAPI operations. */
+  readonly modules: readonly AppModule<TConfig, Operation>[];
   /** Pass as `defineApp({ health })`: readiness probes for the parts still installed. */
   readonly health: { readonly checks: readonly HealthCheck[] };
 }
@@ -127,7 +147,7 @@ const eventsProvider = <TConfig extends ApiPresetConfig>() =>
     },
   });
 
-const dataProvider = <TConfig extends ApiPresetConfig>(jobs: Pick<DataPorterOptions, 'imports' | 'exports'>) =>
+const dataProvider = <TConfig extends ApiPresetConfig>({ imports = [], exports = [] }: DataOptions) =>
   defineProvider<TConfig>({
     name: 'data',
     dependsOn: ['queue'],
@@ -135,7 +155,7 @@ const dataProvider = <TConfig extends ApiPresetConfig>(jobs: Pick<DataPorterOpti
       container.singleton(EXPORT_STORE, () => new LocalExportStore('storage/exports'));
       container.scoped(
         DATA_PORTER,
-        (r) => new DataPorter({ queue: r.resolve(QUEUE), store: r.resolve(EXPORT_STORE), ...jobs }),
+        (r) => new DataPorter({ queue: r.resolve(QUEUE), store: r.resolve(EXPORT_STORE), imports, exports }),
       );
     },
   });
@@ -164,6 +184,36 @@ const notificationsProvider = <TConfig extends ApiPresetConfig>(
     },
   });
 
+const denyInProduction = (c: Context<FrameworkEnv>): void => {
+  const config = resolve(c, CONFIG) as ApiPresetConfig;
+  if (config.app.env === 'production') throw forbidden('Import/export endpoints require authorization');
+};
+
+const dataModule = <TConfig extends ApiPresetConfig>({ authorize = denyInProduction, resources }: DataOptions) =>
+  defineModule<TConfig, Operation>({
+    name: 'data',
+    routes: {
+      path: '/data',
+      app: importExportRoutes({
+        porter: (c) => resolve(c, DATA_PORTER),
+        execution: (c) => resolve(c, EXECUTION_CONTEXT),
+        authorize,
+      }),
+    },
+    operations: dataOperations({ mount: '/api/v1/data', ...(resources ? { resources: [...resources] } : {}) }),
+  });
+
+const listenersProvider = <TConfig extends ApiPresetConfig>(listeners: readonly Listener[]) =>
+  defineProvider<TConfig>({
+    name: 'listeners',
+    dependsOn: ['events'],
+    register() {},
+    async boot({ container }) {
+      const bus = container.resolve(EVENT_BUS);
+      for (const listener of listeners) await bus.subscribe(listener.channel, listener.handle);
+    },
+  });
+
 const isProvider = <TConfig extends object>(value: object): value is ServiceProvider<TConfig> => 'register' in value;
 
 /**
@@ -174,13 +224,13 @@ const isProvider = <TConfig extends object>(value: object): value is ServiceProv
  *
  * ```ts
  * const api = apiPreset<AppConfig>({ notifications: { definitions, job }, mail: myMailProvider, data: false });
- * export const app = defineApp<AppConfig>({ providers: api.providers, health: api.health, http });
+ * export const app = defineApp<AppConfig, Operation>({ ...api, http });
  * ```
  */
 export function apiPreset<TConfig extends ApiPresetConfig>(options: ApiPresetOptions<TConfig>): ApiPreset<TConfig> {
   const part = (choice: Part<TConfig> | undefined, fallback: () => ServiceProvider<TConfig>) =>
     choice === false ? [] : [choice ?? fallback()];
-  const { data = { imports: [], exports: [] }, notifications } = options;
+  const { data = {}, notifications, listeners } = options;
 
   return {
     providers: [
@@ -195,7 +245,9 @@ export function apiPreset<TConfig extends ApiPresetConfig>(options: ApiPresetOpt
       ...(notifications === false
         ? []
         : [isProvider<TConfig>(notifications) ? notifications : notificationsProvider<TConfig>(notifications)]),
+      ...(listeners ? [listenersProvider<TConfig>(listeners)] : []),
     ],
+    modules: data === false ? [] : [dataModule<TConfig>(isProvider<TConfig>(data) ? {} : data)],
     health: {
       checks: [
         ...(options.database === false ? [] : [databaseHealthCheck()]),
