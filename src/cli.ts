@@ -6,6 +6,7 @@ import {
   type ProjectAdapter,
   type ProjectPaths,
   type ProjectTools,
+  type ObservatoryHandle,
   type SessionPruneHandle,
 } from '@framework/cli';
 import { createConnection, type DatabaseConnection, type Seeder } from '@framework/database';
@@ -52,6 +53,34 @@ export interface ApiProjectOptions<TConfig extends ApiPresetConfig> {
   readonly overrides?: Partial<Omit<ProjectAdapter, 'paths' | 'tools'>> & {
     readonly paths?: Partial<ProjectPaths>;
     readonly tools?: Partial<ProjectTools>;
+  };
+}
+
+/** The `observatory:*` commands' store, when the app has `@framework/observatory` installed. */
+function observatoryHook<TConfig extends ApiPresetConfig>(root: string): ProjectAdapter['observatory'] {
+  let specifier: string;
+  try {
+    specifier = Bun.resolveSync('@framework/observatory', root);
+  } catch {
+    return undefined;
+  }
+  return async (rawConfig): Promise<ObservatoryHandle> => {
+    const config = rawConfig as TConfig;
+    const { PgObservatoryStore } = (await import(specifier)) as {
+      PgObservatoryStore: new (connection: DatabaseConnection) => Omit<ObservatoryHandle, 'close'>;
+    };
+    const connection = createConnection({
+      url: config.database.url,
+      maxConnections: config.database.maxConnections,
+      applicationName: config.app.name,
+    });
+    const store = new PgObservatoryStore(connection);
+    return {
+      query: (filter) => store.query(filter),
+      prune: (before) => store.prune(before),
+      clear: () => store.clear(),
+      close: () => connection.close(),
+    };
   };
 }
 
@@ -109,6 +138,7 @@ export async function apiProject<TConfig extends ApiPresetConfig>(
   // The middleware alias table is config-driven; load it once for `middleware:list`.
   const middleware = createMiddleware(await loadConfig({ envFile }));
   const sessions = sessionsHook<TConfig>(root);
+  const observatory = observatoryHook<TConfig>(root);
 
   return defineProject({
     name,
@@ -127,6 +157,7 @@ export async function apiProject<TConfig extends ApiPresetConfig>(
       return { driver: driver ?? 'memory', clear: () => cache.clear(), close: () => cache.close() };
     },
     ...(sessions ? { sessions } : {}),
+    ...(observatory ? { observatory } : {}),
     routes: async (config) => {
       // Booting only registers bindings (nothing connects); it makes the
       // listed route table match what the server actually serves.
