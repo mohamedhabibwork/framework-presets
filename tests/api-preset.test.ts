@@ -1,11 +1,25 @@
 import { describe, expect, test } from 'bun:test';
-import { Application, defineProvider, type JsonValue, type ServiceProvider } from '@framework/core';
+import {
+  ANONYMOUS_ACTOR,
+  Application,
+  defineProvider,
+  ExecutionContext,
+  type JsonValue,
+  type ServiceProvider,
+} from '@framework/core';
 import { DATABASE } from '@framework/database';
 import { type DomainEvent, EVENT_BUS } from '@framework/events';
 import { defineApp } from '@framework/http';
-import { defineNotificationJob, NOTIFICATIONS } from '@framework/notifications';
+import {
+  defineChannel,
+  defineNotification,
+  defineNotificationJob,
+  NOTIFICATIONS,
+  type NotificationChannel,
+} from '@framework/notifications';
 import type { Operation } from '@framework/openapi';
-import { QUEUE } from '@framework/queue';
+import { defineJob, QUEUE } from '@framework/queue';
+import { z } from 'zod/v4';
 import { type ApiPresetConfig, apiPreset, DATA_PORTER, EXPORT_STORE, WEBSOCKET_GATEWAY } from '../src';
 
 const redisUrl = process.env.REDIS_URL;
@@ -42,6 +56,50 @@ describe('apiPreset', () => {
       }
       expect(container.has(DATA_PORTER)).toBe(true);
       expect(container.resolve(NOTIFICATIONS)).toBeDefined();
+    } finally {
+      await application.shutdown();
+    }
+  });
+
+  test('jobs reach the queue by name, and channels reach the notifications service', async () => {
+    const ping = defineJob({
+      name: 'preset.ping',
+      version: 1,
+      payload: z.object({ at: z.string() }),
+      idempotencyKey: ({ at }) => `ping-${at}`,
+      handle: async () => null,
+    });
+    const delivered: string[] = [];
+    const pager = defineChannel({
+      name: 'pager',
+      content: z.object({ text: z.string() }),
+      deliver: async (_to, { text }) => {
+        delivered.push(text);
+      },
+    });
+    const page = defineNotification({
+      name: 'page',
+      channels: ['pager' as NotificationChannel],
+      payload: z.object({}),
+      content: { pager: () => ({ text: 'wake up' }) },
+    });
+    const preset = apiPreset({
+      jobs: [ping],
+      notifications: { definitions: [page], job: defineNotificationJob(), channels: [pager] },
+    });
+    const application = await new Application<ApiPresetConfig>({ config, providers: preset.providers }).boot();
+    try {
+      const queue = application.container.resolve(QUEUE);
+      const execution = new ExecutionContext('command', 'corr-preset', ANONYMOUS_ACTOR);
+
+      const { id } = await queue.dispatch('preset.ping', { at: 'now' }, execution);
+      await application.container
+        .resolve(NOTIFICATIONS)
+        .send({ name: 'page', channels: ['pager' as NotificationChannel], to: 'on-call', payload: {} });
+
+      expect(id).toBe('ping-now');
+      expect(delivered).toEqual(['wake up']);
+      await queue.queue.obliterate({ force: true });
     } finally {
       await application.shutdown();
     }

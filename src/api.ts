@@ -23,7 +23,7 @@ import {
   type NotificationsServiceOptions,
 } from '@framework/notifications';
 import type { Operation } from '@framework/openapi';
-import { QUEUE, QueueManager, queueHealthCheck } from '@framework/queue';
+import { type JobList, QUEUE, QueueManager, queueHealthCheck } from '@framework/queue';
 import { createStorageProvider, type StorageConfig } from '@framework/storage';
 import type { Context } from 'hono';
 import { DATA_PORTER, EXPORT_STORE, WEBSOCKET_GATEWAY } from './constants';
@@ -65,12 +65,14 @@ export interface ApiPresetOptions<TConfig extends ApiPresetConfig> {
   readonly database?: Part<TConfig>;
   readonly cache?: Part<TConfig>;
   readonly queue?: Part<TConfig>;
+  /** Jobs `queue.dispatch` can reach by name; declare the same list as `Register.jobs` to type it. */
+  readonly jobs?: JobList;
   readonly events?: Part<TConfig>;
   readonly logging?: Part<TConfig>;
   readonly storage?: Part<TConfig>;
   readonly mail?: Part<TConfig>;
   /** The app's notification definitions and delivery job; the worker must run that job too. */
-  readonly notifications: Part<TConfig> | Pick<NotificationsServiceOptions, 'definitions' | 'job'>;
+  readonly notifications: Part<TConfig> | Pick<NotificationsServiceOptions, 'definitions' | 'job' | 'channels'>;
   /** Queued import/export under `/api/v1/data`. A provider replaces only the bindings, not the routes. */
   readonly data?: Part<TConfig> | DataOptions;
   /** Subscribed to the event bus at boot. */
@@ -109,13 +111,19 @@ const databaseProvider = <TConfig extends ApiPresetConfig>() =>
     },
   });
 
-const queueProvider = <TConfig extends ApiPresetConfig>() =>
+const queueProvider = <TConfig extends ApiPresetConfig>(jobs?: JobList) =>
   defineProvider<TConfig>({
     name: 'queue',
     register({ container, config }) {
       container.singleton(
         QUEUE,
-        () => new QueueManager({ url: config.redis.url, prefix: config.queue.prefix, queue: config.queue.name }),
+        () =>
+          new QueueManager({
+            url: config.redis.url,
+            prefix: config.queue.prefix,
+            queue: config.queue.name,
+            ...(jobs ? { jobs } : {}),
+          }),
         (queue) => queue.close(),
       );
     },
@@ -161,7 +169,7 @@ const dataProvider = <TConfig extends ApiPresetConfig>({ imports = [], exports =
   });
 
 const notificationsProvider = <TConfig extends ApiPresetConfig>(
-  app: Pick<NotificationsServiceOptions, 'definitions' | 'job'>,
+  app: Pick<NotificationsServiceOptions, 'definitions' | 'job' | 'channels'>,
 ) =>
   defineProvider<TConfig>({
     name: 'notifications',
@@ -236,7 +244,7 @@ export function apiPreset<TConfig extends ApiPresetConfig>(options: ApiPresetOpt
     providers: [
       ...part(options.database, databaseProvider<TConfig>),
       ...part(options.cache, () => createCacheProvider<TConfig>((config) => config.cache)),
-      ...part(options.queue, queueProvider<TConfig>),
+      ...part(options.queue, () => queueProvider<TConfig>(options.jobs)),
       ...part(options.events, eventsProvider<TConfig>),
       ...part(options.logging, () => createLoggingProvider<TConfig>((config) => config.logging)),
       ...part(options.storage, () => createStorageProvider<TConfig>()),
