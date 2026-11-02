@@ -1,0 +1,41 @@
+{
+  "name": "@framework/presets",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Ready-made provider stacks for applications: replace or disable any part.",
+  "homepage": "https://github.com/mohamedhabibwork/framework-presets#readme",
+  "bugs": {
+    "url": "https://github.com/mohamedhabibwork/framework/issues"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mohamedhabibwork/framework.git",
+    "directory": "packages/presets"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@framework/cache": "workspace:*",
+    "@framework/core": "workspace:*",
+    "@framework/crud": "workspace:*",
+    "@framework/database": "workspace:*",
+    "@framework/events": "workspace:*",
+    "@framework/http": "workspace:*",
+    "@framework/logging": "workspace:*",
+    "@framework/mail": "workspace:*",
+    "@framework/notifications": "workspace:*",
+    "@framework/queue": "workspace:*",
+    "@framework/storage": "workspace:*"
+  }
+}
