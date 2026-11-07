@@ -1,0 +1,52 @@
+{
+  "name": "@framework/presets",
+  "version": "0.2.0",
+  "description": "Ready-made provider stacks for applications: replace or disable any part.",
+  "license": "MIT",
+  "type": "module",
+  "homepage": "https://github.com/mohamedhabibwork/framework/tree/main/packages/presets",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mohamedhabibwork/framework-presets.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mohamedhabibwork/framework/issues"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "scripts": {
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "format": "oxfmt",
+    "format:check": "oxfmt --check",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./cli": "./src/cli.ts"
+  },
+  "dependencies": {
+    "@framework/cache": "github:mohamedhabibwork/framework-cache#standalone",
+    "@framework/cli": "github:mohamedhabibwork/framework-cli#standalone",
+    "@framework/core": "github:mohamedhabibwork/framework-core#standalone",
+    "@framework/crud": "github:mohamedhabibwork/framework-crud#standalone",
+    "@framework/database": "github:mohamedhabibwork/framework-database#standalone",
+    "@framework/events": "github:mohamedhabibwork/framework-events#standalone",
+    "@framework/http": "github:mohamedhabibwork/framework-http#standalone",
+    "@framework/logging": "github:mohamedhabibwork/framework-logging#standalone",
+    "@framework/mail": "github:mohamedhabibwork/framework-mail#standalone",
+    "@framework/notifications": "github:mohamedhabibwork/framework-notifications#standalone",
+    "@framework/openapi": "github:mohamedhabibwork/framework-openapi#standalone",
+    "@framework/queue": "github:mohamedhabibwork/framework-queue#standalone",
+    "@framework/storage": "github:mohamedhabibwork/framework-storage#standalone",
+    "hono": "4.13.13"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.2",
+    "oxfmt": "0.75.0",
+    "oxlint": "1.90.0",
+    "typescript": "7.0.2",
+    "zod": "4.6.7"
+  }
+}
