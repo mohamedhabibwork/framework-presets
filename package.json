@@ -40,7 +40,7 @@
     "@framework/openapi": "workspace:*",
     "@framework/queue": "workspace:*",
     "@framework/storage": "workspace:*",
-    "hono": "4.13.13"
+    "hono": "4.13.16"
   },
   "devDependencies": {
     "zod": "4.6.7"
